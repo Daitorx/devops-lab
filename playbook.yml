@@ -1,0 +1,97 @@
+- name: Comprobar variables de entorno
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Verificar que .env está cargado
+      ansible.builtin.assert:
+        that: lookup('env', item) | length > 0
+        fail_msg: "Falta {{ item }}. Carga el .env con: set -a; source .env; set +a"
+        quiet: true
+      loop: [DEVOPS_HOST, DEVOPS_USER, DEVOPS_PASSWORD, GRAFANA_ADMIN_USER, GRAFANA_ADMIN_PASSWORD]
+
+- name: Configurar devops-lab
+  hosts: devops-lab
+  become: true
+  vars:
+    app_dir: /opt/devops-lab
+    docker_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts['architecture']] }}"
+    distro: "{{ ansible_facts['distribution'] | lower }}"
+
+  tasks:
+    - name: Instalar dependencias
+      ansible.builtin.apt:
+        name: [ca-certificates, curl, python3-debian]
+        update_cache: true
+
+    - name: Añadir repositorio de Docker
+      ansible.builtin.deb822_repository:
+        name: docker
+        types: deb
+        uris: "https://download.docker.com/linux/{{ distro }}"
+        suites: "{{ ansible_facts['distribution_release'] }}"
+        components: stable
+        architectures: "{{ docker_arch }}"
+        signed_by: "https://download.docker.com/linux/{{ distro }}/gpg"
+
+    - name: Instalar Docker y Docker Compose
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        update_cache: true
+
+    - name: Arrancar y habilitar Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Añadir {{ ansible_user }} al grupo docker
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+
+    - name: Copiar compose.yml y Dockerfile de Jenkins
+      ansible.builtin.copy:
+        src: files/
+        dest: "{{ app_dir }}/"
+
+    - name: Obtener GID del grupo docker
+      ansible.builtin.getent:
+        database: group
+        key: docker
+
+    - name: Crear .env de Docker Compose
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        mode: "0600"
+        content: |
+          DOCKER_GID={{ ansible_facts.getent_group.docker[1] }}
+          GRAFANA_ADMIN_USER={{ lookup('env', 'GRAFANA_ADMIN_USER') }}
+          GRAFANA_ADMIN_PASSWORD={{ lookup('env', 'GRAFANA_ADMIN_PASSWORD') }}
+
+    - name: Levantar Jenkins y Grafana
+      ansible.builtin.command: docker compose up -d --build
+      args:
+        chdir: "{{ app_dir }}"
+      register: compose
+      changed_when: (compose.stdout ~ compose.stderr) is search('Started|Recreated')
+
+    - name: Esperar a la contraseña inicial de Jenkins
+      ansible.builtin.command: docker exec jenkins cat /var/jenkins_home/secrets/initialAdminPassword
+      register: jenkins_pass
+      retries: 30
+      delay: 5
+      until: jenkins_pass.rc == 0
+      changed_when: false
+      failed_when: false
+
+    - name: Mostrar accesos
+      ansible.builtin.debug:
+        msg:
+          - "Jenkins: http://{{ ansible_host }}:8080  (contraseña inicial: {{ jenkins_pass.stdout or 'ya configurado' }})"
+          - "Grafana: http://{{ ansible_host }}:3000"

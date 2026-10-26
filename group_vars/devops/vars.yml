@@ -1,0 +1,8 @@
+# Conexión leída de variables de entorno (ver .env.example)
+ansible_host: "{{ lookup('env', 'DEVOPS_HOST') }}"
+ansible_user: "{{ lookup('env', 'DEVOPS_USER') }}"
+ansible_password: "{{ lookup('env', 'DEVOPS_PASSWORD') }}"
+ansible_become_password: "{{ lookup('env', 'DEVOPS_PASSWORD') }}"
+# Ubuntu 26.04 usa sudo-rs por defecto, cuyo prompt Ansible no reconoce: usamos el sudo clásico
+ansible_become_exe: sudo.ws
+ansible_python_interpreter: /usr/bin/python3
